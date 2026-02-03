@@ -9,8 +9,8 @@ import pandas as pd
 
 # Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title="Inventory tracker",
-    page_icon=":shopping_bags:",  # This is an emoji shortcode. Could be a URL too.
+    page_title="Compass Coffee Reorder Dashboard",
+    #page_icon=":shopping_bags:",  # This is an emoji shortcode. Could be a URL too.
 )
 
 
@@ -171,14 +171,15 @@ def update_data(conn, df, changes):
 
 # Set the title that appears at the top of the page.
 """
-# :shopping_bags: Inventory tracker
+# Compass Coffee Reorder Dashboard
 
-**Welcome to Alice's Corner Store's intentory tracker!**
-This page reads and writes directly from/to our inventory database.
+**Welcome to Compass Coffee's reorder dashboard for store managers!**
+Using recent sales data you upload, this page provides inventory stocking recommendations using Machine Learning. These are only suggestions, and the developers of this page are not responsible for any errors. For internal use only.
 """
 
 st.info(
     """
+    **[This function not to be included in final product]**
     Use the table below to add, remove, and edit items.
     And don't forget to commit your changes when you're done.
     """
