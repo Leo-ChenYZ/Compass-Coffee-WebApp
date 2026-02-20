@@ -5,6 +5,7 @@ import sqlite3
 import streamlit as st
 import altair as alt
 import pandas as pd
+from modeling import run_forecast
 
 
 # Set the title and favicon that appear in the Browser's tab bar.
@@ -177,115 +178,78 @@ def update_data(conn, df, changes):
 Using recent sales data you upload, this page provides inventory stocking recommendations using Machine Learning. These are only suggestions, and the developers of this page are not responsible for any errors. For internal use only.
 """
 
-st.info(
-    """
-    **[This function not to be included in final product]**
-    Use the table below to add, remove, and edit items.
-    And don't forget to commit your changes when you're done.
-    """
+# Store location selector
+st.subheader("Select Store Location")
+store_location = st.selectbox(
+    "Choose your store:",
+    [
+        "Store 1",
+        "Store 2",
+        "Store 3",
+        "Store 4",
+        "Store 5",
+    ],
 )
 
-# Connect to database and create table if needed
-conn, db_was_just_created = connect_db()
-
-# Initialize data.
-if db_was_just_created:
-    initialize_data(conn)
-    st.toast("Database initialized with some sample data.")
-
-# Load data from database
-df = load_data(conn)
-
-# Display data with editable table
-edited_df = st.data_editor(
-    df,
-    disabled=["id"],  # Don't allow editing the 'id' column.
-    num_rows="dynamic",  # Allow appending/deleting rows.
-    column_config={
-        # Show dollar sign before price columns.
-        "price": st.column_config.NumberColumn(format="$%.2f"),
-        "cost_price": st.column_config.NumberColumn(format="$%.2f"),
-    },
-    key="inventory_table",
+# CSV file upload for demand prediction
+st.subheader("Upload Recent Sales Data")
+uploaded_file = st.file_uploader(
+    "Upload a CSV file for demand prediction",
+    type="csv",
 )
 
-has_uncommitted_changes = any(len(v) for v in st.session_state.inventory_table.values())
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    st.success(f"File '{uploaded_file.name}' uploaded successfully!")
+    st.write("Preview of uploaded data:")
+    st.dataframe(df.head())
 
-st.button(
-    "Commit changes",
-    type="primary",
-    disabled=not has_uncommitted_changes,
-    # Update data in database
-    on_click=update_data,
-    args=(conn, df, st.session_state.inventory_table),
-)
+# Prediction section
+st.subheader("Generate Demand Predictions")
+st.write("Click the button below to generate demand predictions for the next 7 days.")
 
+# Button to trigger prediction
+if st.button("🔮 Generate Predictions", type="primary", use_container_width=True):
+    try:
+        # Load mock preprocessed data
+        data_path = Path(__file__).parent / "mock_preprocessed_data.csv"
+        df = pd.read_csv(data_path)
+        
+        # Run the forecast model
+        with st.spinner("Running our magic machine learning model..."):
+            predictions = run_forecast(df)
+        
+        st.success("Predictions generated successfully!")
+        
+        # Display metrics summary
+        st.subheader("📊 Forecast Summary")
+        col1, col2 = st.columns(2)
 
-# -----------------------------------------------------------------------------
-# Now some cool charts
-
-# Add some space
-""
-""
-""
-
-st.subheader("Units left", divider="red")
-
-need_to_reorder = df[df["units_left"] < df["reorder_point"]].loc[:, "item_name"]
-
-if len(need_to_reorder) > 0:
-    items = "\n".join(f"* {name}" for name in need_to_reorder)
-
-    st.error(f"We're running dangerously low on the items below:\n {items}")
-
-""
-""
-
-st.altair_chart(
-    # Layer 1: Bar chart.
-    alt.Chart(df)
-    .mark_bar(
-        orient="horizontal",
-    )
-    .encode(
-        x="units_left",
-        y="item_name",
-    )
-    # Layer 2: Chart showing the reorder point.
-    + alt.Chart(df)
-    .mark_point(
-        shape="diamond",
-        filled=True,
-        size=50,
-        color="salmon",
-        opacity=1,
-    )
-    .encode(
-        x="reorder_point",
-        y="item_name",
-    ),
-    use_container_width=True,
-)
-
-st.caption("NOTE: The :diamonds: location shows the reorder point.")
-
-""
-""
-""
-
-# -----------------------------------------------------------------------------
-
-st.subheader("Best sellers", divider="orange")
-
-""
-""
-
-st.altair_chart(
-    alt.Chart(df)
-    .mark_bar(orient="horizontal")
-    .encode(
-        x="units_sold",
-        y=alt.Y("item_name").sort("-x"),
-    ),
-    use_container_width=True,
-)
+        with col1:
+            st.metric("Total Items", len(predictions))
+        with col2:
+            st.metric("Top Item Demand", f"{predictions['Predicted Amount (Next 7 Days)'].iloc[0]:.1f}")
+        
+        # Display full predictions table
+        st.subheader("📋 Detailed Predictions")
+        st.dataframe(
+            predictions.style.format({"Predicted Amount (Next 7 Days)": "{:.1f}"}),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Display as a bar chart
+        st.subheader("📈 Predicted Demand by Product")
+        chart = alt.Chart(predictions).mark_bar().encode(
+            x=alt.X("Predicted Amount (Next 7 Days):Q", title="Predicted Amount (Next 7 Days)"),
+            y=alt.Y("Product:N", sort="-x", title="Product"),
+            color=alt.Color("Predicted Amount (Next 7 Days):Q", scale=alt.Scale(scheme="viridis")),
+            tooltip=["Product", "Predicted Amount (Next 7 Days)"]
+        ).interactive()
+        
+        st.altair_chart(chart, use_container_width=True)
+        
+    except FileNotFoundError:
+        st.error(f"❌ Error: mock_preprocessed_data.csv not found in {Path(__file__).parent}")
+    except Exception as e:
+        st.error(f"❌ Error during prediction: {str(e)}")
