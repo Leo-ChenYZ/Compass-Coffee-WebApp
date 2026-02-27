@@ -229,25 +229,69 @@ if st.button("🔮 Generate Predictions", type="primary", use_container_width=Tr
             st.metric("Total Items", len(predictions))
         with col2:
             st.metric("Top Item Demand", f"{predictions['Predicted Amount (Next 7 Days)'].iloc[0]:.1f}")
-        
-        # Display full predictions table
+
+        # Display full predictions table (read-only)
         st.subheader("📋 Detailed Predictions")
         st.dataframe(
             predictions.style.format({"Predicted Amount (Next 7 Days)": "{:.1f}"}),
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
-        
-        # Display as a bar chart
-        st.subheader("📈 Predicted Demand by Product")
-        chart = alt.Chart(predictions).mark_bar().encode(
-            x=alt.X("Predicted Amount (Next 7 Days):Q", title="Predicted Amount (Next 7 Days)"),
-            y=alt.Y("Product:N", sort="-x", title="Product"),
-            color=alt.Color("Predicted Amount (Next 7 Days):Q", scale=alt.Scale(scheme="viridis")),
-            tooltip=["Product", "Predicted Amount (Next 7 Days)"]
-        ).interactive()
-        
-        st.altair_chart(chart, use_container_width=True)
+
+        # Inventory input table: Product + Current Inventory (editable)
+        st.subheader("🧾 Enter Current Inventory")
+        input_df = predictions[["Product"]].copy()
+        input_df["Current Inventory"] = pd.NA
+
+        try:
+            edited_input = st.experimental_data_editor(
+                input_df,
+                num_rows="fixed",
+                use_container_width=True,
+            )
+        except Exception:
+            edited_input = input_df.copy()
+            for i, row in edited_input.iterrows():
+                user_val = st.text_input(f"{row['Product']} - Current Inventory", value="", key=f"ci_{i}")
+                edited_input.at[i, "Current Inventory"] = user_val
+
+        # Calculate order amounts when requested
+        if st.button("Calculate Amount to Order"):
+            df_input = edited_input.copy()
+            df_input["Current Inventory"] = pd.to_numeric(df_input["Current Inventory"], errors="coerce")
+
+            # Merge with predictions to get predicted amounts
+            merged = predictions.merge(
+                df_input, on="Product", how="right", suffixes=(None, None)
+            )
+
+            # Keep only rows where user provided a numeric current inventory
+            merged = merged[merged["Current Inventory"].notna()].copy()
+
+            if not merged.empty:
+                merged["Amount to Order"] = (
+                    merged["Predicted Amount (Next 7 Days)"] - merged["Current Inventory"]
+                ).clip(lower=0)
+
+                display_cols = [
+                    "Product",
+                    "Predicted Amount (Next 7 Days)",
+                    "Current Inventory",
+                    "Amount to Order",
+                ]
+
+                st.subheader("🧾 Amount to Order")
+                st.dataframe(
+                    merged[display_cols].style.format({
+                        "Predicted Amount (Next 7 Days)": "{:.1f}",
+                        "Current Inventory": "{:.1f}",
+                        "Amount to Order": "{:.1f}",
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("No numeric current inventory values provided — enter numbers to calculate orders.")
         
     except FileNotFoundError:
         st.error(f"❌ Error: mock_preprocessed_data.csv not found in {Path(__file__).parent}")
