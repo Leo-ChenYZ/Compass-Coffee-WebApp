@@ -5,6 +5,7 @@ import sqlite3
 import streamlit as st
 import altair as alt
 import pandas as pd
+import numpy as np
 from modeling import run_forecast
 
 
@@ -167,6 +168,27 @@ def update_data(conn, df, changes):
     conn.commit()
 
 
+def apply_unit_conversion(predictions: pd.DataFrame, conversion_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach unit conversion info and compute converted forecast values."""
+    conversion_df = conversion_df.rename(
+        columns={"item": "Product", "Primary Purchase Unit": "Unit", "Factor": "Factor"}
+    )
+
+    output = predictions.merge(
+        conversion_df[["Product", "Factor", "Unit"]],
+        on="Product",
+        how="left",
+    )
+    output["Factor"] = output["Factor"].fillna(1.0).astype(float)
+    output["Unit"] = output["Unit"].fillna("base_unit")
+    output["Predicted Amount (Next 7 Days)"] = (
+        np.ceil(output["Predicted Amount (Next 7 Days)"] * output["Factor"])
+        .fillna(0)
+        .astype(int)
+    )
+    return output
+
+
 # -----------------------------------------------------------------------------
 # Draw the actual page, starting with the inventory table.
 
@@ -178,18 +200,7 @@ def update_data(conn, df, changes):
 Using recent sales data you upload, this page provides inventory stocking recommendations using Machine Learning. These are only suggestions, and the developers of this page are not responsible for any errors. For internal use only.
 """
 
-# Store location selector
-st.subheader("Select Store Location")
-store_location = st.selectbox(
-    "Choose your store:",
-    [
-        "Store 1",
-        "Store 2",
-        "Store 3",
-        "Store 4",
-        "Store 5",
-    ],
-)
+
 
 # CSV file upload for demand prediction
 st.subheader("Upload Recent Sales Data")
@@ -201,99 +212,142 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
     st.success(f"File '{uploaded_file.name}' uploaded successfully!")
-    st.write("Preview of uploaded data:")
-    st.dataframe(df.head())
+
+# Store location selector
+st.subheader("Select Store Location")
+store_location = st.selectbox(
+    "Choose a store:",
+    sorted([
+        "Adams Morgan",
+        "Dupont",
+        "Navy Yard, Ballpark",
+        "Ballston",
+        "Fairfax",
+        "Spring Valley",
+        "Ballston West, Wilson & N. Glebe",
+        "College Park",
+        "Langston Boulevard, Drive Thru",
+        "Clarendon",
+        "Chinatown, 7th & F",
+        "Rosslyn",
+        "Shaw, 7th & P",
+        "Navy Yard North, I & New Jersey",
+        "West Falls Church, Drive Thru",
+        "Franklin Park, 13th & K",
+        "Penn Quarter, 11th & E",
+        "Farragut, 18th & Eye",
+        "Mount Vernon, 7th & New York",
+        "14th Street, 14th & U",
+        "Golden Triangle, 17th & H",
+        "McPherson, 14th & Eye",
+        "Georgetown",
+        "North Shaw, 8th & Florida",
+        "Metro Center, 13th and F"
+    ]),
+)
 
 # Prediction section
 st.subheader("Generate Demand Predictions")
 st.write("Click the button below to generate demand predictions for the next 7 days.")
 
-# Button to trigger prediction
+# Initialize persistent session state keys
+if "predictions" not in st.session_state:
+    st.session_state.predictions = None
+if "order_results" not in st.session_state:
+    st.session_state.order_results = None
+
+# Generate predictions and persist in session state
 if st.button("🔮 Generate Predictions", type="primary", use_container_width=True):
     try:
-        # Load mock preprocessed data
         data_path = Path(__file__).parent / "mock_preprocessed_data.csv"
         df = pd.read_csv(data_path)
-        
-        # Run the forecast model
+
+        conversion_path = Path(__file__).parent / "item_unit_conversions.csv"
+        conversion_df = pd.read_csv(conversion_path)
+
         with st.spinner("Running our magic machine learning model..."):
-            predictions = run_forecast(df)
-        
+            raw_predictions = run_forecast(df)
+            st.session_state.predictions = apply_unit_conversion(raw_predictions, conversion_df)
+
+        st.session_state.order_results = None
         st.success("Predictions generated successfully!")
-        
-        # Display metrics summary
-        st.subheader("📊 Forecast Summary")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.metric("Total Items", len(predictions))
-        with col2:
-            st.metric("Top Item Demand", f"{predictions['Predicted Amount (Next 7 Days)'].iloc[0]:.1f}")
-
-        # Display full predictions table (read-only)
-        st.subheader("📋 Detailed Predictions")
-        st.dataframe(
-            predictions.style.format({"Predicted Amount (Next 7 Days)": "{:.1f}"}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        # Inventory input table: Product + Current Inventory (editable)
-        st.subheader("🧾 Enter Current Inventory")
-        input_df = predictions[["Product"]].copy()
-        input_df["Current Inventory"] = pd.NA
-
-        try:
-            edited_input = st.experimental_data_editor(
-                input_df,
-                num_rows="fixed",
-                use_container_width=True,
-            )
-        except Exception:
-            edited_input = input_df.copy()
-            for i, row in edited_input.iterrows():
-                user_val = st.text_input(f"{row['Product']} - Current Inventory", value="", key=f"ci_{i}")
-                edited_input.at[i, "Current Inventory"] = user_val
-
-        # Calculate order amounts when requested
-        if st.button("Calculate Amount to Order"):
-            df_input = edited_input.copy()
-            df_input["Current Inventory"] = pd.to_numeric(df_input["Current Inventory"], errors="coerce")
-
-            # Merge with predictions to get predicted amounts
-            merged = predictions.merge(
-                df_input, on="Product", how="right", suffixes=(None, None)
-            )
-
-            # Keep only rows where user provided a numeric current inventory
-            merged = merged[merged["Current Inventory"].notna()].copy()
-
-            if not merged.empty:
-                merged["Amount to Order"] = (
-                    merged["Predicted Amount (Next 7 Days)"] - merged["Current Inventory"]
-                ).clip(lower=0)
-
-                display_cols = [
-                    "Product",
-                    "Predicted Amount (Next 7 Days)",
-                    "Current Inventory",
-                    "Amount to Order",
-                ]
-
-                st.subheader("🧾 Amount to Order")
-                st.dataframe(
-                    merged[display_cols].style.format({
-                        "Predicted Amount (Next 7 Days)": "{:.1f}",
-                        "Current Inventory": "{:.1f}",
-                        "Amount to Order": "{:.1f}",
-                    }),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-            else:
-                st.info("No numeric current inventory values provided — enter numbers to calculate orders.")
-        
     except FileNotFoundError:
         st.error(f"❌ Error: mock_preprocessed_data.csv not found in {Path(__file__).parent}")
     except Exception as e:
         st.error(f"❌ Error during prediction: {str(e)}")
+
+# If we have predictions in session state, render the downstream UI
+if st.session_state.predictions is not None:
+    predictions = st.session_state.predictions
+
+    st.subheader("📊 Forecast Summary")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Items", len(predictions))
+
+    st.subheader("📋 Detailed Predictions")
+    st.dataframe(
+        predictions[["Product", "Predicted Amount (Next 7 Days)", "Unit"]]
+        .style.format({
+            "Predicted Amount (Next 7 Days)": "{:.0f}",
+        }),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("🧾 Enter Current Inventory")
+    input_df = predictions[["Product"]].copy()
+    input_df["Current Inventory"] = pd.NA
+
+    try:
+        edited_input = st.experimental_data_editor(
+            input_df,
+            num_rows="fixed",
+            use_container_width=True,
+            key="inventory_input_editor",
+        )
+    except Exception:
+        edited_input = input_df.copy()
+        for i, row in edited_input.iterrows():
+            user_val = st.text_input(
+                f"{row['Product']} - Current Inventory", value="", key=f"ci_{i}"
+            )
+            edited_input.at[i, "Current Inventory"] = user_val
+
+    if st.button("Calculate Amount to Order"):
+        df_input = edited_input.copy()
+        df_input["Current Inventory"] = pd.to_numeric(df_input["Current Inventory"], errors="coerce")
+
+        merged = predictions.merge(df_input, on="Product", how="right")
+        merged = merged[merged["Current Inventory"].notna()].copy()
+
+        if not merged.empty:
+            merged["Amount to Order"] = np.ceil(
+                (merged["Predicted Amount (Next 7 Days)"] - merged["Current Inventory"]).clip(lower=0)
+            ).astype(int)
+
+            merged["Predicted Amount (Next 7 Days)"] = merged["Predicted Amount (Next 7 Days)"]
+            st.session_state.order_results = merged
+        else:
+            st.session_state.order_results = pd.DataFrame()
+            st.info("No numeric current inventory values provided — enter numbers to calculate orders.")
+
+    if st.session_state.order_results is not None and not st.session_state.order_results.empty:
+        display_cols = [
+            "Product",
+            "Predicted Amount (Next 7 Days)",
+            "Current Inventory",
+            "Amount to Order",
+            "Unit",
+        ]
+
+        st.subheader("🧾 Amount to Order")
+        st.dataframe(
+            st.session_state.order_results[display_cols].style.format({
+                "Predicted Amount (Next 7 Days)": "{:.0f}",
+                "Current Inventory": "{:.1f}",
+                "Amount to Order": "{:.0f}",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
